@@ -27,32 +27,22 @@
 @property (strong, nonatomic) NSFileHandle * fileHandle;
 
 @end
-
-
-static ViewController * objc;
-
 @implementation ViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    objc = self;
-    NSString * fileName = [NSString stringWithFormat:@"%ld",[[NSDate date] timeIntervalSince1970]];
-    
-     NSString *homePath  = NSHomeDirectory();
-    NSString *sourcePath = [NSHomeDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"Documents/%@.h264",fileName]];
+    NSString *sourcePath = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/test.h264"];
     NSFileManager *fileManager = [NSFileManager defaultManager];
-    if(![[NSFileManager defaultManager] createFileAtPath:sourcePath contents:nil attributes:nil]) {
+    if([fileManager fileExistsAtPath:sourcePath]) {
+        [fileManager removeItemAtPath:sourcePath error:nil];
+    }
+    if(![fileManager createFileAtPath:sourcePath contents:nil attributes:nil]) {
         
     }
      _fileHandle= [NSFileHandle fileHandleForWritingAtPath:sourcePath];
-//     [self.fileHandle writeData:stringData];
-//     [self.fileHandle closeFile];
-    
     
     [self inInit];
-//    TestView * view = [[TestView alloc] initWithFrame:CGRectMake(50, 50, 100, 100)];
-//    view.backgroundColor = [UIColor redColor];
-//    [self.view addSubview:view];
+
     
     // Do any additional setup after loading the view.
 }
@@ -71,12 +61,13 @@ static ViewController * objc;
     
   
     [self createEncoder];
-//    [self startVideoEncode];
+    [self startVideoEncode];
     
 }
 - (void)createEncoder {
-    
-    OSStatus status = VTCompressionSessionCreate(NULL, 180, 320, kCMVideoCodecType_H264, NULL, NULL, NULL, encodeOutPutDataCallback, (__bridge void*)self, &_compressionSessionRef);
+    int width = [UIScreen mainScreen].bounds.size.width;
+    int height = [UIScreen mainScreen].bounds.size.height;
+    OSStatus status = VTCompressionSessionCreate(NULL,width, height, kCMVideoCodecType_H264, NULL, NULL, NULL, encodeOutPutDataCallback, (__bridge void*)self, &_compressionSessionRef);
     if(status != noErr) {
         NSLog(@"VEVideoEncoder::VTCompressionSessionCreate:failed status:%d", (int)status);
         return;
@@ -90,8 +81,18 @@ static ViewController * objc;
         return;
     }
     
+    int32_t rotation = 0;
+    CFNumberRef rotationDegrees = CFNumberCreate(NULL, kCFNumberSInt32Type, &rotation);
+    VTSessionSetProperty(_compressionSessionRef, kVTCompressionPropertyKey_TransferFunction, rotationDegrees);
+    
     // ProfileLevel，h264的协议等级，不同的清晰度使用不同的ProfileLevel。
-    status = VTSessionSetProperty(_compressionSessionRef, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_3_1);
+    //质量水平
+    // 1、Baseline Profile：基本画质。支持I/P 帧，只支持无交错（Progressive）和CAVLC；
+    // 2、Extended profile：进阶画质。支持I/P/B/SP/SI 帧，只支持无交错（Progressive）和CAVLC；(用的少)
+    // 3、Main profile：主流画质。提供I/P/B 帧，支持无交错（Progressive）和交错（Interlaced）， 也支持CAVLC 和CABAC 的支持；
+    // 4、High profile：高级画质。在main Profile 的基础上增加了8x8内部预测、自定义量化、 无损视频编码和更多的YUV 格式；
+
+    status = VTSessionSetProperty(_compressionSessionRef, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_5_2);
     
     if (noErr != status)
     {
@@ -99,6 +100,9 @@ static ViewController * objc;
         return;
     }
     //设置实时编码输出(避免延迟)
+    //用来设置编码器的工作模式是实时还是离线
+    //实时:延迟更低，但压缩效率会差一些，要求实时性高的场景需要开启
+    //离线则编得慢些，延迟更大，但压缩效率会更高。本地录制视频文件可以使用离线模式
     status = VTSessionSetProperty(_compressionSessionRef, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
     if (noErr != status)
     {
@@ -114,8 +118,15 @@ static ViewController * objc;
         return;
     }
     
+    //H.264压缩的熵编码模式。kVTH264EntropyMode_CAVLC(Context-based Adaptive Variable Length Coding) or kVTH264EntropyMode_CABAC(Context-based Adaptive Binary Arithmetic Coding)  CABAC通常以较高的计算开销为代价提供更好的压缩
+    status = VTSessionSetProperty(_compressionSessionRef, kVTCompressionPropertyKey_H264EntropyMode, kVTH264EntropyMode_CABAC);
+    if(status != noErr) {
+        NSLog(@"VEVideoEncoder::kVTCompressionPropertyKey_H264EntropyMode failed status:%d", (int)status);
+        return;
+    }
+    
     //每个几个帧创建一个关键帧 100 表示每隔99帧创建一个关键帧
-    status = VTSessionSetProperty(_compressionSessionRef, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(15*240));
+    status = VTSessionSetProperty(_compressionSessionRef, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(60));
     if (noErr != status)
     {
         NSLog(@"VEVideoEncoder::kVTCompressionPropertyKey_MaxKeyFrameInterval failed status:%d", (int)status);
@@ -127,6 +138,17 @@ static ViewController * objc;
         NSLog(@"VEVideoEncoder::kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration failed status:%d", (int)status);
         return ;
     }
+    
+    if ( @available(iOS 12.0, *)) {
+        //在一个GOP里面的某一帧在解码时要依赖于前一个GOP中的某一些帧，这种GOP结构叫做Open-GOP。一般码流里面含有B帧的时候才会出现Open-GOP，Open-GOP以一个或多个B帧开始，参考之前GOP的P帧和当前GOP的I帧
+        //我们通常用的是Close-GOP Close-GOP中的帧不可以参考其前后的其它GOP 一般以I帧开头
+        status = VTSessionSetProperty(_compressionSessionRef, kVTCompressionPropertyKey_AllowOpenGOP,  kCFBooleanTrue);
+        {
+            NSLog(@"VEVideoEncoder::kVTCompressionPropertyKey_AllowOpenGOP failed status:%d", (int)status);
+            return ;
+        }
+    }
+
     
     status = VTCompressionSessionPrepareToEncodeFrames(_compressionSessionRef);
     
@@ -204,13 +226,14 @@ void encodeOutPutDataCallback(void * CM_NULLABLE outputCallbackRefCon,void * CM_
             NSMutableData * spsData = [NSMutableData data];
             [spsData appendData:headerData];
             [spsData appendData:sps];
-//            [self wite]
+
             [encoder writeDataToFile:spsData];
+            
             NSData * pps = [NSData dataWithBytes:pParameterSet length:pParameterSetSize];
             NSMutableData * ppsData = [NSMutableData data];
             [ppsData appendData:headerData];
             [ppsData appendData:pps];
-            [encoder writeDataToFile:spsData];
+            [encoder writeDataToFile:ppsData];
         }
         
         
@@ -267,9 +290,12 @@ void encodeOutPutDataCallback(void * CM_NULLABLE outputCallbackRefCon,void * CM_
     int64_t oneSecondValue = 1;
     CFNumberRef onSecond = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &oneSecondValue);
     const void* nums[2] = {bytePerSecond,onSecond};
+    //用来设置硬性码率限制，实际做的就是设置码率的硬性限制是每秒码率不超过平均码率的 2 (kLimitToAverageBitRateFactor)倍
     CFArrayRef dataRateLimits = CFArrayCreate(NULL, nums, 2, &kCFTypeArrayCallBacks);
     status = VTSessionSetProperty(_compressionSessionRef, kVTCompressionPropertyKey_DataRateLimits, dataRateLimits);
-    
+    CFRelease(onSecond);
+    CFRelease(bytePerSecond);
+    CFRelease(dataRateLimits);
     if (noErr != status)
     {
         NSLog(@"VEVideoEncoder::kVTCompressionPropertyKey_DataRateLimits failed status:%d", (int)status);
