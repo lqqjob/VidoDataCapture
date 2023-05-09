@@ -328,11 +328,16 @@ void encodeOutPutDataCallback(void * CM_NULLABLE outputCallbackRefCon,void * CM_
     AVCaptureDevice * audioDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
     self.audioInputDevice = [AVCaptureDeviceInput deviceInputWithDevice:audioDevice error:nil];
     
-    self.videoInputDevice = self.frontCamera;
+    self.videoInputDevice = self.backCamera;
 }
 - (void)createCaptureSession {
     self.captrueSession = [[AVCaptureSession alloc] init];
     [self.captrueSession beginConfiguration];
+    
+    //设置分辨率 720标清
+    if([self.captrueSession canSetSessionPreset:AVCaptureSessionPreset1920x1080]) {
+        [self.captrueSession setSessionPreset:AVCaptureSessionPreset1920x1080];
+    }
     
     if([self.captrueSession canAddInput:self.videoInputDevice]){
         [self.captrueSession addInput:self.videoInputDevice];
@@ -350,6 +355,15 @@ void encodeOutPutDataCallback(void * CM_NULLABLE outputCallbackRefCon,void * CM_
         [self.captrueSession addOutput:self.audioDataOutput];
     }
     
+    // 画面是向左旋转了90度，因为默认采集的视频是横屏的，需要我们进一步做调整。以下步骤添加在[session startRunning];之前即可，但是一定要在添加了 input 和 output之后～
+    
+    // 获取输入与输出之间的连接
+    AVCaptureConnection *connection = [self.videoDataOutput connectionWithMediaType:AVMediaTypeVideo];
+    // 设置采集数据的方向
+    connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+    // 设置镜像效果镜像
+    connection.videoMirrored = YES;
+    
     [self.captrueSession commitConfiguration];
     [self.captrueSession startRunning];
 }
@@ -361,8 +375,22 @@ void encodeOutPutDataCallback(void * CM_NULLABLE outputCallbackRefCon,void * CM_
 - (void)createOutput {
     dispatch_queue_t captureQueue = dispatch_queue_create("com.VidoDataCapture.lqqjob.VidoDataCapture", DISPATCH_QUEUE_SERIAL);
     self.videoDataOutput = [[AVCaptureVideoDataOutput alloc] init];
+    [self.videoDataOutput setMinFrameDuration:CMTimeMake(1, 10)];//帧率 1秒钟10帧
     [self.videoDataOutput setSampleBufferDelegate:self queue:captureQueue];
     [self.videoDataOutput setAlwaysDiscardsLateVideoFrames:YES];
+    /**
+     // key
+     kCVPixelBufferPixelFormatTypeKey 指定解码后的图像格式
+     // value
+     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange  : YUV420 用于标清视频[420v]
+     kCVPixelFormatType_420YpCbCr8BiPlanarFullRange   : YUV422 用于高清视频[420f]
+     kCVPixelFormatType_32BGRA : 输出的是BGRA的格式，适用于OpenGL和CoreImage
+
+     区别：
+     1、前两种是相机输出YUV格式，然后转成RGBA，最后一种是直接输出BGRA，然后转成RGBA;
+     2、420v 输出的视频格式为NV12；范围： (luma=[16,235] chroma=[16,240])
+     3、420f 输出的视频格式为NV12；范围： (luma=[0,255] chroma=[1,255])
+     */
     [self.videoDataOutput setVideoSettings:@{
         (__bridge NSString*)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
     }];
@@ -374,6 +402,12 @@ void encodeOutPutDataCallback(void * CM_NULLABLE outputCallbackRefCon,void * CM_
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     
     if(output == self.videoDataOutput) {
+        //获取帧播放时间
+        CMTime duration = CMSampleBufferGetDuration(sampleBuffer);
+        //获取图片帧数据
+        CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+        CIImage * ciImage = [CIImage imageWithCVImageBuffer:imageBuffer];
+        UIImage * image = [UIImage imageWithCIImage:ciImage];
         [self videoEncodeInputData:sampleBuffer forceKeyFrame:NO];
     }
     
