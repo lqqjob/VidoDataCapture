@@ -37,7 +37,7 @@
         [fileManager removeItemAtPath:sourcePath error:nil];
     }
     if(![fileManager createFileAtPath:sourcePath contents:nil attributes:nil]) {
-        
+       //
     }
      _fileHandle= [NSFileHandle fileHandleForWritingAtPath:sourcePath];
     
